@@ -1,0 +1,15 @@
+Basic TCP and UDP servers
+Validate the limitation
+Parallel execution with threads
+Break it
+Parallel execution with asyncio
+Break
+test non blocking
+multi connection with non blocking and selectors
+
+
+
+
+non blocking IO
+asynchronous IO
+fcntl call??
