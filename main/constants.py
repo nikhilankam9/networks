@@ -1,5 +1,14 @@
-host = '127.0.0.1'
+# host = '172.31.14.136'
+# host = 'ec2-18-237-37-212.us-west-2.compute.amazonaws.com'
+host = 'localhost'
 port = 8989
+data = "foo_bar"
+
+# data = data * 1024 #7KB
+# data = data * 10 * 1024 #70KB
+# data = data * 100 * 1024 #700KB
+# data = data * 1024 * 1024 #7MB
+data = data * 10 * 1024 * 1024 #70MB
 
 # maximum data to be received at once is set by BUFFER_SIZE
 BUFFER_SIZE = 10240

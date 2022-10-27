@@ -2,6 +2,23 @@ import socket
 import struct
 from packet import *
 from constants import *
+import threading
+import argparse
+import logging
+
+parser = argparse.ArgumentParser()
+parser.add_argument( '-log',
+                     '--loglevel',
+                     default='warning',
+                     help='Provide logging level. Example --loglevel debug, default=warning' )
+
+args = parser.parse_args()
+logging.basicConfig( level=args.loglevel.upper() )
+log = logging.getLogger('server')
+
+lock = threading.Lock()
+received = 0
+handled = 0
 
 def get_socket():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -11,8 +28,8 @@ def get_socket():
         # level(current socket itself), reuse = True(1)
 
     sock.bind((host, port))
-    sock.listen(1) # backlog(# of unaccepted conn before refusing)
-    print(f'TCP socket serving: {(host, port)}')
+    sock.listen(10000) # backlog(# of unaccepted conn in queue before refusing)
+    log.info(f'serving: {(host, port)}')
 
     return sock
 
@@ -27,8 +44,7 @@ def handle_client(c :socket):
             data_packet = c.recv(BUFFER_SIZE)
             if len(data_packet) > 0:
                 #TODO: what if these values are corrupted?
-                frame_no, frame_size, total_frames, data, checksum = packet(DATA_PACKET_FORMAT).unpack(data_packet)
-                
+                frame_no, frame_size, total_frames, data_piece, checksum = packet(DATA_PACKET_FORMAT).unpack(data_packet)
                 ack = None
                 if not ack and frame_no <= last_received_frame:
                     ack = ACK #gracefully ignoring if a duplicate packet is sent
@@ -40,26 +56,37 @@ def handle_client(c :socket):
                 if not ack and frame_no == last_received_frame + 1:
                     last_received_frame += 1
                     frames_received += 1
-                    message += data.decode('ascii')
+                    message += data_piece.decode('ascii').rstrip('\x00')
+                    if frame_no % 1000 == 0:
+                        log.debug(f'{frame_no}, {c.getpeername()}')
                     ack = ACK
                 
                 ack_packet = packet(ACK_PACKET_FORMAT)
                 ack_packet.set_args(ack, last_received_frame)
-                c.send(ack_packet.pack())
+                sent = c.send(ack_packet.pack())
+                if sent == 0:
+                    log.warning(f'sent 0 bytes: {last_received_frame}')
 
             if frames_received == total_frames:
                 break
-
-
-        print(f'Client: {c.getpeername()} Frames: {frames_received} Msg len: {len(message)}')
+        
+        if message != data:
+            log.error(f'{len(message)}, {len(data)}')
+        log.info(f'Recieved Client : {c.getpeername()} Frames: {frames_received} Msg len: {len(message)}')
+        
+        lock.acquire()
+        global handled
+        handled += 1
+        lock.release()
 
     except struct.error as e:
-        print(f'ERROR: packing error {e}')
+        log.error('packing error', exc_info=True)
     except ConnectionResetError:
-        print('Client connection lost, gracefully ignoring client')
-    except Exception as e:
-        raise e
+        log.warning('Client connection lost, gracefully ignoring client')
+    except socket.error as e:
+        log.error(f'socket error', exc_info=True)
     finally:
+        log.info(f'Rec: {frames_received} Total: {total_frames}')
         c.close()
 
 def serve_traffic(sock):
@@ -67,10 +94,13 @@ def serve_traffic(sock):
         try:
             client, address = sock.accept() # connection socket and its address
             sock.settimeout(TIME_OUT) #timeout on blocking sockets
-            print(f"Connected from {str(address)}")
+            log.info(f'Connected from {str(address)}')
+            global received
+            received += 1
 
-            handle_client(client)
-
+            thread = threading.Thread(target=handle_client, args=(client,))
+            thread.start()
+            
         except Exception as e:
             raise e
 
@@ -80,8 +110,12 @@ def main():
         serve_traffic(server)
 
     except KeyboardInterrupt:
-        print('---- Graceful shutdown ----')
+        log.warning('---- Graceful shutdown ----')
+        global received 
+        global handled
+        log.critical(f'Rec: {received}, Handle: {handled}')
     finally:
+        log.info(f'Closing the server socket')
         server.close()
 
 if __name__ == "__main__":
