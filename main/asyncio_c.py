@@ -1,13 +1,10 @@
-import socket
-import struct
-import threading
-from packet import *
-from constants import *
-import sys
-import time
 import math
+import asyncio
 import argparse
 import logging
+import time
+from constants import *
+from packet import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument( '-log',
@@ -24,13 +21,14 @@ log = logging.getLogger('client')
 
 no_of_clients = int(args.n)
 
+
+times = []
 total_length = len(transfer_data)
 total_frames = math.ceil(total_length / FRAME_DATA_SIZE) + 1
 
-lock = threading.Lock()
-times = []
+async def handle_conn(reader, writer):
+    start = time.time()
 
-def handle_data(server: socket):
     current_frame = 1
     last_transmitted_frame = 0
     frames_transmitted = 0
@@ -50,11 +48,14 @@ def handle_data(server: socket):
             except struct.error as e:
                 log.error(f'packing error {last_transmitted_frame}')
 
-            sent = server.send(packet_bytes)
+            sent = writer.write(packet_bytes)
+            await writer.drain()
+
             if sent == 0:
                 log.warning(f'sent 0 bytes: {last_transmitted_frame}')
 
-            ack_packet = server.recv(BUFFER_SIZE)
+            ack_packet = await reader.read(BUFFER_SIZE)
+
             try:
                 ack, last_transmitted_frame = packet(ACK_PACKET_FORMAT).unpack(ack_packet)
             except struct.error as e:
@@ -67,57 +68,35 @@ def handle_data(server: socket):
                 # do nothing coz the loop retries based on the last transmitted frame
                 pass
         
-        log.info(f'Server: {server.getpeername()} Frames: {frames_transmitted} Msg len: {total_length}')
+        end = time.time()
+        times.append(end - start)
+
+        log.info(f'Server: {writer.get_extra_info("peername")} Frames: {frames_transmitted} Msg len: {total_length}')
     except ConnectionResetError:
         if last_transmitted_frame == total_frames - 1:
             log.warning('gracefully ignoring last packet')
         else:
             log.error(f'connection', exc_info=True)
-    except socket.error as e:
-        log.error(f'socket error', exc_info=True)
     finally:
-        server.close()
+        writer.close()
 
-def client():
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(TIME_OUT)
-            sock.connect((host, port))
-            log.info(f'Sock: {sock.getsockname()}, Data/Frame: {FRAME_DATA_SIZE}, Frames: {total_frames}')
+async def main():
+    async with asyncio.TaskGroup() as tg:
+        tasks = []
+        for _ in range(no_of_clients):
+            reader, writer = await asyncio.open_connection(host, port)
+            task = tg.create_task(handle_conn(reader, writer))
+            tasks.append(task)
+        
+        asyncio.gather(*tasks)
 
-            start = time.time()
-            handle_data(sock)
-            end = time.time()
-
-            # locking makes update sequential but it should not impact because handle_data(sock)
-            # is finshed and end time is captured
-            # it may impact total time
-            lock.acquire()
-            times.append(end - start)
-            lock.release()
-
-    except OSError:
-        log.error(f'os error', exc_info=False)
-    except UnboundLocalError:
-        log.error('reference error', exc_info=False)
-    except Exception as e:
-        log.error(f'Unknown error', exc_info=True)
 
 if __name__ == "__main__":
     start = time.time()
-    all_threads = []
-
-    for i in range(no_of_clients):
-        thread = threading.Thread(target=client, args=())
-        thread.start()
-        all_threads.append(thread)
-
-    for t in all_threads:
-        t.join()
+    asyncio.run(main())
     end = time.time()
 
     log.critical(f'Avg = {round(sum(times)/len(times), 3)}, \
-            Max:{round(max(times), 3)}, \
-            Min:{round(min(times), 3)}, \
-            Total: {round(end - start, 3)}')
-    
+        Max:{round(max(times), 3)}, \
+        Min:{round(min(times), 3)}, \
+        Total: {round(end - start, 3)}')
